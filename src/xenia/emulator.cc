@@ -31,15 +31,14 @@
 #include "xenia/cpu/backend/null_backend.h"
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/thread_state.h"
-#include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/hid/input_driver.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/gameinfo_utils.h"
-#include "xenia/kernel/util/xdbf_utils.h"
 #include "xenia/kernel/xam/xam_module.h"
+#include "xenia/kernel/xam/xdbf/xdbf.h"
 #include "xenia/kernel/xbdm/xbdm_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
 #include "xenia/memory.h"
@@ -57,26 +56,22 @@
 #include "xenia/cpu/backend/x64/x64_backend.h"
 #endif  // XE_ARCH
 
+DECLARE_int32(user_language);
+
 DEFINE_double(time_scalar, 1.0,
               "Scalar used to speed or slow time (1x, 2x, 1/2x, etc).",
               "General");
-
 DEFINE_string(
     launch_module, "",
     "Executable to launch from the .iso or the package instead of default.xex "
     "or the module specified by the game. Leave blank to launch the default "
     "module.",
     "General");
-
 DEFINE_bool(allow_game_relative_writes, false,
             "Not useful to non-developers. Allows code to write to paths "
             "relative to game://. Used for "
             "generating test data to compare with original hardware. ",
             "General");
-
-DECLARE_int32(user_language);
-
-DECLARE_bool(allow_plugins);
 
 namespace xe {
 using namespace xe::literals;
@@ -93,7 +88,8 @@ Emulator::GameConfigLoadCallback::~GameConfigLoadCallback() {
 Emulator::Emulator(const std::filesystem::path& command_line,
                    const std::filesystem::path& storage_root,
                    const std::filesystem::path& content_root,
-                   const std::filesystem::path& cache_root)
+                   const std::filesystem::path& cache_root,
+                   const std::filesystem::path& profile_root)
     : on_launch(),
       on_terminate(),
       on_exit(),
@@ -101,6 +97,7 @@ Emulator::Emulator(const std::filesystem::path& command_line,
       storage_root_(storage_root),
       content_root_(content_root),
       cache_root_(cache_root),
+      profile_root_(profile_root),
       title_name_(),
       title_version_(),
       display_window_(nullptr),
@@ -266,9 +263,6 @@ X_STATUS Emulator::Setup(
   // Shared kernel state.
   kernel_state_ = std::make_unique<xe::kernel::KernelState>(this);
 
-  plugin_loader_ = std::make_unique<xe::patcher::PluginLoader>(
-      kernel_state_.get(), storage_root() / "plugins");
-
   // Setup the core components.
   result = graphics_system_->Setup(
       processor_.get(), kernel_state_.get(),
@@ -396,12 +390,9 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
 
   file_system_->UnregisterSymbolicLink("d:");
   file_system_->UnregisterSymbolicLink("game:");
-  file_system_->UnregisterSymbolicLink("plugins:");
-
   // Create symlinks to the device.
   file_system_->RegisterSymbolicLink("game:", mount_path);
   file_system_->RegisterSymbolicLink("d:", mount_path);
-
   return X_STATUS_SUCCESS;
 }
 
@@ -432,6 +423,35 @@ X_STATUS Emulator::LaunchXexFile(const std::filesystem::path& path) {
   // \\Device\\Harddisk0\\Partition1
   // and then get that symlinked to game:\, so
   // -> game:\foo.xex
+
+  // Register local directory as some commonly used mount paths
+  std::string mount_paths[] = {
+      "\\Device\\Harddisk0\\Partition0",
+      "\\Device\\Harddisk0\\Partition1",
+      "\\Device\\Harddisk0\\Partition1\\DEVKIT",
+      "\\Device\\LauncherData",
+      "\\SystemRoot",
+  };
+
+  auto parent_path = path.parent_path();
+  
+  for (auto path : mount_paths) {
+    auto device =
+        std::make_unique<vfs::HostPathDevice>(path, parent_path, true);
+    if (!device->Initialize()) {
+      XELOGE("Unable to scan host path");
+      return X_STATUS_NO_SUCH_FILE;
+    }
+    if (!file_system_->RegisterDevice(std::move(device))) {
+      XELOGE("Unable to register host path");
+      return X_STATUS_NO_SUCH_FILE;
+    }
+  }
+
+  // Create symlinks to the device.
+  file_system_->RegisterSymbolicLink("game:", mount_paths[0]);
+  file_system_->RegisterSymbolicLink("d:", mount_paths[0]);
+
   // Get just the filename (foo.xex).
   auto file_name = path.filename();
 
@@ -943,7 +963,7 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
       title_version_ = format_version(title_version);
     }
   }
- 
+
   // Try and load the resource database (xex only).
   if (module->title_id()) {
     auto title_id = fmt::format("{:08X}", module->title_id());
@@ -959,6 +979,22 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
           ->PostGameConfigLoad();
     }
     game_config_load_callback_loop_next_index_ = SIZE_MAX;
+
+    uint32_t resource_data = 0;
+    uint32_t resource_size = 0;
+
+    module->GetSection(title_id, &resource_data, &resource_size);
+    
+    spa_ = std::make_unique<kernel::xam::xdbf::SpaFile>();
+    if (spa_->Read(module->memory()->TranslateVirtual(resource_data),
+                   resource_size)) {
+      // Set title SPA and get title name/icon
+      for (uint32_t i = 0; i < 4; i++) {
+        if (kernel_state_->IsUserSignedIn(i)) {
+          kernel_state_->user_profile(i)->SetTitleSpaData(spa_file());
+        }
+      }
+    }
 
     const kernel::util::XdbfGameData db = kernel_state_->module_xdbf(module);
     if (db.is_valid()) {
@@ -1003,16 +1039,6 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
   }
   main_thread_ = main_thread;
   on_launch(title_id_.value(), title_name_);
-
-  // Plugins must be loaded after calling LaunchModule() and
-  // FinishLoadingUserModule() which will apply TUs and patching to the main
-  // xex.
-  if (cvars::allow_plugins) {
-    if (plugin_loader_->IsAnyPluginForTitleAvailable(title_id_.value(),
-                                                     module->hash().value())) {
-      plugin_loader_->LoadTitlePlugins(title_id_.value());
-    }
-  }
 
   return X_STATUS_SUCCESS;
 }

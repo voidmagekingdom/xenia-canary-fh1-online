@@ -52,9 +52,9 @@ DECLARE_string(hid);
 
 DECLARE_bool(guide_button);
 
-DECLARE_bool(clear_memory_page_state);
-
 DECLARE_bool(d3d12_readback_resolve);
+
+DECLARE_bool(d3d12_clear_memory_page_state);
 
 DEFINE_bool(fullscreen, false, "Whether to launch the emulator in fullscreen.",
             "Display");
@@ -155,7 +155,7 @@ using namespace xe::hid;
 using namespace xe::gpu;
 
 const std::string kRecentlyPlayedTitlesFilename = "recent.toml";
-const std::string kBaseTitle = "Xenia-canary";
+const std::string kBaseTitle = "Xenia-burnout5";
 
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
                                ui::WindowedAppContext& app_context)
@@ -535,6 +535,74 @@ void EmulatorWindow::DisplayConfigDialog::OnDraw(ImGuiIO& io) {
   }
 }
 
+void EmulatorWindow::UserConfigDialog::OnDraw(ImGuiIO& io) {
+  kernel::KernelState* kernel_state =
+      emulator_window_.emulator_->kernel_state();
+  if (!kernel_state) {
+    return;
+  }
+
+  // In the top-left corner so it's close to the menu bar from where it was
+  // opened.
+  // Origin Y coordinate 20 was taken from the Dear ImGui demo.
+  ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+  // Alpha from Dear ImGui tooltips (0.35 from the overlay provides too low
+  // visibility). Translucent so some effect of the changes can still be seen
+  // through it.
+  ImGui::SetNextWindowBgAlpha(0.6f);
+  bool dialog_open = true;
+  if (!ImGui::Begin("User Settings", &dialog_open,
+                    ImGuiWindowFlags_NoCollapse |
+                        ImGuiWindowFlags_AlwaysAutoResize |
+                        ImGuiWindowFlags_HorizontalScrollbar)) {
+    ImGui::End();
+    return;
+  }
+
+  ImGui::TextUnformatted("Edit properties for the currently connected users.");
+  ImGui::Spacing();
+
+  ImGuiInputTextFlags input_flags =
+      ImGuiInputTextFlags_CharsNoBlank | ImGuiInputTextFlags_AutoSelectAll;
+
+  auto userCount = kernel_state->GetConnectedUsers();
+
+  if (!emulator_window_.emulator_->is_title_open()) {
+    if (userCount > 0) {
+      for (int i = 0; i < userCount; ++i) {
+        if (ImGui::TreeNodeEx(
+                fmt::format("Player {}", i + 1).c_str(),
+                ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_DefaultOpen)) {
+          if (kernel_state->IsUserSignedIn(i)) {
+            auto user = kernel_state->user_profile(i);
+            char buffer[16] = {0};
+            std::strcpy(buffer, user->name().c_str());
+            if (ImGui::InputText("Gamertag", buffer, sizeof(buffer),
+                                 input_flags)) {
+              user->SetGamertagString(buffer);
+            } else {
+              XELOGW(fmt::format(
+                         "Unable to open gamertag config panel for user {}", i)
+                         .c_str());
+            }
+          }
+          ImGui::TreePop();
+        } else {
+          XELOGW("Unable to open the user configuration window");
+        }
+      }
+      if (ImGui::Button("Exit")) {
+        emulator_window_.ToggleUserConfigDialog();
+      }
+    }
+  } else {
+    ImGui::TextUnformatted(
+        "Editing profiles while running a title is not supported. "
+        "Please restart Xenia and try again.");
+  }
+}
+
 bool EmulatorWindow::Initialize() {
   window_->AddListener(&window_listener_);
   window_->AddInputListener(&window_listener_, kZOrderEmulatorWindowInput);
@@ -638,13 +706,25 @@ bool EmulatorWindow::Initialize() {
   auto hid_menu = MenuItem::Create(MenuItem::Type::kPopup, "&HID");
   {
     hid_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Toggle controller vibration", "",
+        MenuItem::Type::kString, "&Toggle Controller Vibration", "",
         std::bind(&EmulatorWindow::ToggleControllerVibration, this)));
     hid_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Display controller hotkeys", "",
+        MenuItem::Type::kString, "&Display Controller Hotkeys", "",
         std::bind(&EmulatorWindow::DisplayHotKeysConfig, this)));
   }
   main_menu->AddChild(std::move(hid_menu));
+
+  // User menu.
+  auto user_menu = MenuItem::Create(MenuItem::Type::kPopup, "&User");
+  {
+    user_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Open User Configuration", "",
+        std::bind(&EmulatorWindow::ToggleUserConfigDialog, this)));
+    user_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Open Profiles Folder", "",
+        std::bind(&EmulatorWindow::OpenProfilesFolder, this)));
+  }
+  main_menu->AddChild(std::move(user_menu));
 
   // Help menu.
   auto help_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Help");
@@ -1019,6 +1099,19 @@ void EmulatorWindow::ToggleDisplayConfigDialog() {
   }
 }
 
+void EmulatorWindow::ToggleUserConfigDialog() {
+  if (!user_config_dialog_) {
+    user_config_dialog_ = std::unique_ptr<UserConfigDialog>(
+        new UserConfigDialog(imgui_drawer_.get(), *this));
+  } else {
+    user_config_dialog_.reset();
+  }
+}
+
+void EmulatorWindow::OpenProfilesFolder() { 
+    LaunchFileExplorer(emulator()->storage_root() / "profiles");
+}
+
 void EmulatorWindow::ToggleControllerVibration() {
   auto input_sys = emulator()->input_system();
   if (input_sys) {
@@ -1100,12 +1193,6 @@ void EmulatorWindow::UpdateTitle() {
   if (patcher && patcher->IsAnyPatchApplied()) {
     sb.Append(u8" [Patches Applied]");
   }
-
-  patcher::PluginLoader* pluginloader = emulator()->plugin_loader();
-  if (pluginloader && pluginloader->IsAnyPluginLoaded()) {
-    sb.Append(u8" [Plugins Loaded]");
-  }
-
   window_->SetTitle(sb.to_string_view());
 }
 
@@ -1265,7 +1352,7 @@ EmulatorWindow::ControllerHotKey EmulatorWindow::ProcessControllerHotkey(
       ToggleGPUSetting(gpu_cvar::ClearMemoryPageState);
 
       // Assume the user wants ClearCaches as well
-      if (cvars::clear_memory_page_state) {
+      if (cvars::d3d12_clear_memory_page_state) {
         GpuClearCaches();
       }
 
@@ -1407,8 +1494,8 @@ void EmulatorWindow::GamepadHotKeys() {
 void EmulatorWindow::ToggleGPUSetting(gpu_cvar value) {
   switch (value) {
     case gpu_cvar::ClearMemoryPageState:
-      CommonSaveGPUSetting(CommonGPUSetting::ClearMemoryPageState,
-                          !cvars::clear_memory_page_state);
+      D3D12SaveGPUSetting(D3D12GPUSetting::ClearMemoryPageState,
+                          !cvars::d3d12_clear_memory_page_state);
       break;
     case gpu_cvar::ReadbackResolve:
       D3D12SaveGPUSetting(D3D12GPUSetting::ReadbackResolve,
@@ -1433,6 +1520,10 @@ bool EmulatorWindow::IsUseNexusForGameBarEnabled() {
 #else
   return false;
 #endif
+}
+
+std::string EmulatorWindow::BoolToString(bool value) {
+  return std::string(value ? "true" : "false");
 }
 
 void EmulatorWindow::DisplayHotKeysConfig() {
@@ -1474,16 +1565,14 @@ void EmulatorWindow::DisplayHotKeysConfig() {
   msg.insert(0, msg_passthru);
   msg += "\n";
 
-  msg += "Readback Resolve: " +
-         xe::string_util::BoolToString(cvars::d3d12_readback_resolve);
+  msg += "Readback Resolve: " + BoolToString(cvars::d3d12_readback_resolve);
   msg += "\n";
 
   msg += "Clear Memory Page State: " +
-         xe::string_util::BoolToString(cvars::clear_memory_page_state);
+         BoolToString(cvars::d3d12_clear_memory_page_state);
   msg += "\n";
 
-  msg += "Controller Hotkeys: " +
-         xe::string_util::BoolToString(cvars::controller_hotkeys);
+  msg += "Controller Hotkeys: " + BoolToString(cvars::controller_hotkeys);
 
   imgui_drawer_.get()->ClearDialogs();
   xe::ui::ImGuiDialog::ShowMessageBox(imgui_drawer_.get(), "Controller Hotkeys",

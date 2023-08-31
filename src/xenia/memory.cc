@@ -188,6 +188,12 @@ bool Memory::Initialize() {
   heaps_.physical.AllocFixed(0x1FFF0000, 0x10000, 0x10000,
                              kMemoryAllocationReserve, kMemoryProtectNoAccess);
 
+  // Pre-reserve encrypted part of memory
+  heaps_.v80000000.AllocFixed(
+      0x8C000000, 0x03FFFFFF, 0x10000,
+      kMemoryAllocationReserve | kMemoryAllocationCommit,
+      kMemoryProtectRead | kMemoryProtectWrite);
+
   // GPU writeback.
   // 0xC... is physical, 0x7F... is virtual. We may need to overlay these.
   heaps_.vC0000000.AllocFixed(
@@ -210,6 +216,12 @@ bool Memory::Initialize() {
   uint32_t unk_phys_alloc;
   heaps_.vA0000000.Alloc(0x340000, 64 * 1024, kMemoryAllocationReserve,
                          kMemoryProtectNoAccess, true, &unk_phys_alloc);
+
+  // PRV register (hack?)
+  heaps_.v80000000.AllocFixed(
+      0x8FFF1000, 0x1000, 0x1000,
+      kMemoryAllocationReserve | kMemoryAllocationCommit,
+      kMemoryProtectRead | kMemoryProtectWrite);
 
   return true;
 }

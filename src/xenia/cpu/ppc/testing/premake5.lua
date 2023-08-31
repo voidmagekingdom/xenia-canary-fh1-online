@@ -16,6 +16,8 @@ project("xenia-cpu-ppc-tests")
     "xenia-base",
     "xenia-kernel",
     "xenia-patcher",
+    "xenia-gpu",
+    "imgui",
   })
   files({
     "ppc_testing_main.cc",

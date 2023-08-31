@@ -33,12 +33,6 @@ class ByteStream;
 
 namespace gpu {
 
-enum class CommonGPUSetting {
-  ClearMemoryPageState,
-};
-
-void CommonSaveGPUSetting(CommonGPUSetting setting, uint64_t value);
-
 class GraphicsSystem;
 class Shader;
 

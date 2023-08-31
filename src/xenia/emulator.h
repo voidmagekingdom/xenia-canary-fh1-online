@@ -22,7 +22,6 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/memory.h"
 #include "xenia/patcher/patcher.h"
-#include "xenia/patcher/plugin_loader.h"
 #include "xenia/vfs/device.h"
 #include "xenia/vfs/virtual_file_system.h"
 #include "xenia/xbox.h"
@@ -91,7 +90,8 @@ class Emulator {
   explicit Emulator(const std::filesystem::path& command_line,
                     const std::filesystem::path& storage_root,
                     const std::filesystem::path& content_root,
-                    const std::filesystem::path& cache_root);
+                    const std::filesystem::path& cache_root,
+                    const std::filesystem::path& profiles_root);
   ~Emulator();
 
   // Full command line used when launching the process.
@@ -105,6 +105,9 @@ class Emulator {
 
   // Folder files safe to remove without significant side effects are stored in.
   const std::filesystem::path& cache_root() const { return cache_root_; }
+
+  // Folder profile data is stored in.
+  const std::filesystem::path& profile_root() const { return profile_root_; }
 
   // Name of the title in the default language.
   const std::string& title_name() const { return title_name_; }
@@ -157,9 +160,9 @@ class Emulator {
   // This is effectively the guest operating system.
   kernel::KernelState* kernel_state() const { return kernel_state_.get(); }
 
-  patcher::Patcher* patcher() const { return patcher_.get(); }
+  kernel::xam::xdbf::SpaFile* spa_file() const { return spa_.get(); }
 
-  patcher::PluginLoader* plugin_loader() const { return plugin_loader_.get(); }
+  patcher::Patcher* patcher() const { return patcher_.get(); }
 
   // Initializes the emulator and configures all components.
   // The given window is used for display and the provided functions are used
@@ -245,6 +248,7 @@ class Emulator {
   std::filesystem::path storage_root_;
   std::filesystem::path content_root_;
   std::filesystem::path cache_root_;
+  std::filesystem::path profile_root_;
 
   std::string title_name_;
   std::string title_version_;
@@ -262,9 +266,10 @@ class Emulator {
   std::unique_ptr<cpu::ExportResolver> export_resolver_;
   std::unique_ptr<vfs::VirtualFileSystem> file_system_;
   std::unique_ptr<patcher::Patcher> patcher_;
-  std::unique_ptr<patcher::PluginLoader> plugin_loader_;
 
   std::unique_ptr<kernel::KernelState> kernel_state_;
+
+  std::unique_ptr<kernel::xam::xdbf::SpaFile> spa_;
 
   // Accessible only from the thread that invokes those callbacks (the UI thread
   // if the UI is available).
@@ -276,7 +281,6 @@ class Emulator {
   size_t game_config_load_callback_loop_next_index_ = SIZE_MAX;
 
   kernel::object_ref<kernel::XThread> main_thread_;
-  kernel::object_ref<kernel::XHostThread> plugin_loader_thread_;
   std::optional<uint32_t> title_id_;  // Currently running title ID
 
   bool paused_;

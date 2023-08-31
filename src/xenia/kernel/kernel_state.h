@@ -123,8 +123,8 @@ class KernelState {
     return user_profiles_.find(index) != user_profiles_.cend();
   }
 
-  bool IsUserSignedIn(uint64_t xuid) const {
-    return user_profile(xuid) != nullptr;
+  bool IsUserSignedIn(uint64_t xuid, bool online) const {
+    return user_profile(xuid, online) != nullptr;
   }
 
   xam::UserProfile* user_profile(uint32_t index) const {
@@ -135,9 +135,10 @@ class KernelState {
     return user_profiles_.at(index).get();
   }
 
-  xam::UserProfile* user_profile(uint64_t xuid) const {
+  xam::UserProfile* user_profile(uint64_t xuid, bool online) const {
     for (const auto& [key, value] : user_profiles_) {
-      if (value->xuid() == xuid) {
+      auto profile_xuid = online ? value->xuid_online() : value->xuid_offline();
+      if (profile_xuid == xuid) {
         return user_profiles_.at(key).get();
       }
     }

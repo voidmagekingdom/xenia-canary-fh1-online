@@ -53,7 +53,8 @@ KernelState::KernelState(Emulator* emulator)
 
   app_manager_ = std::make_unique<xam::AppManager>();
   achievement_manager_ = std::make_unique<AchievementManager>();
-  user_profiles_.emplace(0, std::make_unique<xam::UserProfile>(0));
+  UpdateUsedUserProfiles();
+  //user_profiles_.emplace(0, std::make_unique<xam::UserProfile>(0, emulator->profile_root()));
 
   auto content_root = emulator_->content_root();
   if (!content_root.empty()) {
@@ -1053,7 +1054,7 @@ uint8_t KernelState::GetConnectedUsers() const {
 void KernelState::UpdateUsedUserProfiles() {
   const uint8_t used_slots_bitmask = GetConnectedUsers();
 
-  for (uint32_t i = 1; i < 4; i++) {
+  for (uint32_t i = 0; i < 4; i++) {
     bool is_used = used_slots_bitmask & (1 << i);
 
     if (IsUserSignedIn(i) && !is_used) {
@@ -1062,7 +1063,13 @@ void KernelState::UpdateUsedUserProfiles() {
     }
 
     if (!IsUserSignedIn(i) && is_used) {
-      user_profiles_.emplace(i, std::make_unique<xam::UserProfile>(i));
+      auto profile =
+          std::make_unique<xam::UserProfile>(i, emulator_->profile_root());
+      auto spa_file = emulator()->spa_file();
+      if (spa_file) {
+        profile->SetTitleSpaData(spa_file);
+      }
+      user_profiles_.emplace(i, std::move(profile));
       BroadcastNotification(0x12, 0);
     }
   }

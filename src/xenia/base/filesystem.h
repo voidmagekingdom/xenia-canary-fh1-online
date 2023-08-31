@@ -13,7 +13,6 @@
 #include <filesystem>
 #include <iterator>
 #include <memory>
-#include <regex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -124,9 +123,6 @@ struct FileInfo {
 };
 bool GetInfo(const std::filesystem::path& path, FileInfo* out_info);
 std::vector<FileInfo> ListFiles(const std::filesystem::path& path);
-std::vector<FileInfo> ListDirectories(const std::filesystem::path& path);
-std::vector<FileInfo> FilterByName(const std::vector<FileInfo>& files,
-                                   const std::regex pattern);
 
 #if XE_PLATFORM_ANDROID
 void AndroidInitialize();
